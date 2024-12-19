@@ -1,165 +1,132 @@
 import numpy as np
 import pandas as pd
-import scipy.stats as stats
+import matplotlib
 import matplotlib.pyplot as plt
 import seaborn as sns
+from scipy.stats import t
 from sklearn.linear_model import LinearRegression
-from sklearn.metrics import r2_score, mean_squared_error
+from sklearn.metrics import r2_score, mean_squared_error, mean_absolute_error
 from sklearn.model_selection import train_test_split
+from sklearn.preprocessing import StandardScaler
 
 # Configuração do estilo dos gráficos
 sns.set(style="whitegrid")
+matplotlib.use('TkAgg')
 
 def carregar_dados(csv_path):
     data = pd.read_csv(csv_path, sep=',', skipinitialspace=True)
-    
-    # Garantir que as colunas 'PM' e 'CPU' existam
-    colunas_disponiveis = data.columns
-    if 'PM' not in colunas_disponiveis or 'CPU' not in colunas_disponiveis:
-        raise ValueError("O arquivo CSV deve conter as colunas 'PM' e 'CPU'.")
-
-    # Criar a coluna 'Processes' automaticamente se não existir
-    if 'Processes' not in colunas_disponiveis:
-        print("A coluna 'Processes' não foi encontrada. Será criada automaticamente.")
-        data['Processes'] = range(1, len(data) + 1)
-    
-    # Garantir valores numéricos
-    data['PM'] = pd.to_numeric(data['PM'].astype(str).str.replace(',', '.'), errors='coerce') / (1024 * 1024)  # MB
-    data['CPU'] = pd.to_numeric(data['CPU'].astype(str).str.replace(',', '.'), errors='coerce')  # CPU em %
-    data['Processes'] = pd.to_numeric(data['Processes'], errors='coerce')
-    
-    # Tratar valores ausentes
-    data = data.dropna(subset=['PM', 'CPU', 'Processes']).reset_index(drop=True)
-    
-    if len(data) < 30:
-        print("Aviso: O conjunto de dados tem menos de 30 amostras. O modelo pode não ser preciso.")
-    
+    colunas_obrigatorias = ['PM', 'CPU', 'Threads']
+    for coluna in colunas_obrigatorias:
+        if coluna not in data.columns:
+            raise ValueError(f"O arquivo CSV deve conter a coluna '{coluna}'.")
+    for coluna in colunas_obrigatorias:
+        data[coluna] = pd.to_numeric(data[coluna].astype(str).str.replace(',', '.'), errors='coerce')
+    data = data.dropna(subset=colunas_obrigatorias).reset_index(drop=True)
+    data = data[data['CPU'] != 0]
     return data
 
-def calcular_metricas(Y):
-    media = Y.mean()
-    mediana = Y.median()
-    variancia = Y.var()
-    desvio_padrao = Y.std()
-    coeficiente_variacao = desvio_padrao / media if media != 0 else 0
-    
-    metricas = pd.DataFrame({
-        'Métrica': ["Média", "Mediana", "Variância", "Desvio Padrão", "Coeficiente de Variação"],
-        'Valor': [
-            round(media, 2), round(mediana, 2), round(variancia, 2), 
-            round(desvio_padrao, 2), round(coeficiente_variacao, 4)
-        ]
-    })
-    return metricas
-
-def mostrar_boxplot(df):
-    plt.figure(figsize=(10, 6))
-    sns.boxplot(data=df[['PM', 'CPU', 'Processes']])
-    plt.title("Boxplot das Variáveis")
-    plt.show()
-
-def boxplot_relacional(df):
-    plt.figure(figsize=(12, 6))
-    sns.scatterplot(x='Processes', y='PM', data=df, color="blue")
-    plt.title("Dispersão: Memória Usada (PM) vs Número de Processos")
-    plt.xlabel("Número de Processos")
-    plt.ylabel("Memória Usada (MB)")
-    plt.grid(True)
-    plt.show()
-    
-    # Boxplot categorizado por faixas de CPU
-    sns.boxplot(x=pd.qcut(df['CPU'], q=4, labels=["Baixa", "Média", "Alta", "Muito Alta"]), y='PM', data=df, showfliers=True)
-    plt.title("Boxplot Relacional: PM vs CPU (Categorizado)")
-    plt.xlabel("Uso de CPU (Categorizado)")
-    plt.ylabel("Memória Usada (MB)")
-    plt.show()
-
-
-def tratar_outliers(df):
-    Q1 = df['PM'].quantile(0.25)
-    Q3 = df['PM'].quantile(0.75)
-    IQR = Q3 - Q1
-    limite_inferior = Q1 - 1.5 * IQR
-    limite_superior = Q3 + 1.5 * IQR
-
-    outliers = df[(df['PM'] < limite_inferior) | (df['PM'] > limite_superior)]
-    print(f"Número de outliers detectados: {len(outliers)}")
-
-    opcao = input("Deseja remover os outliers? (s/n): ")
-    if opcao.lower() == 's':
-        df = df[(df['PM'] >= limite_inferior) & (df['PM'] <= limite_superior)]
-        print("Outliers removidos.")
-    else:
-        print("Os outliers não foram removidos.")
+def tratar_outliers(df, colunas):
+    for coluna in colunas:
+        Q1 = df[coluna].quantile(0.25)
+        Q3 = df[coluna].quantile(0.75)
+        IQR = Q3 - Q1
+        limite_inferior = Q1 - 3.0 * IQR
+        limite_superior = Q3 + 3.0 * IQR
+        df = df[(df[coluna] >= limite_inferior) & (df[coluna] <= limite_superior)]
     return df
 
-def calcular_frequencias(df):
-    frequencias = {
-        'PM': df['PM'].value_counts().reset_index(name='Frequência'),
-        'CPU': df['CPU'].value_counts().reset_index(name='Frequência'),
-        'Processes': df['Processes'].value_counts().reset_index(name='Frequência')
+
+
+def calcular_metricas(df):
+    # Calcula as métricas básicas
+    metricas = {
+        "Média": df[['PM', 'CPU', 'Threads']].mean(),
+        "Moda": df[['PM', 'CPU', 'Threads']].mode().iloc[0],
+        "Mediana": df[['PM', 'CPU', 'Threads']].median(),
+        "Variância": df[['PM', 'CPU', 'Threads']].var(),
+        "Desvio Padrão": df[['PM', 'CPU', 'Threads']].std(),
+        "Coeficiente de Variação": df[['PM', 'CPU', 'Threads']].std() / df[['PM', 'CPU', 'Threads']].mean()
     }
-    for coluna, freq in frequencias.items():
-        print(f"\nFrequência da variável '{coluna}':")
-        print(freq.head(10))
 
-def calcular_percentis(Y):
-    percentis = np.percentile(Y, [5, 20, 25, 50, 75, 95])
-    percentis_df = pd.DataFrame({
-        "Percentil": ["5%", "20%", "25%", "50%", "75%", "95%"],
-        "Valor": np.round(percentis, 4)
-    })
-    print("\nPercentis da Memória Usada (PM):")
-    print(percentis_df)
-    return percentis_df
-
+    # Adicionando o intervalo de confiança de 95% a cada variável
+    ic = {}
+    for coluna in ['PM', 'CPU', 'Threads']:
+        n = len(df[coluna])
+        mean = df[coluna].mean()
+        sem = df[coluna].std() / np.sqrt(n)
+        margin = t.ppf(0.975, df=n-1) * sem
+        ic[coluna] = f"[{mean - margin:.2f}, {mean + margin:.2f}]"
+    
+    # Adicionando o intervalo de confiança às métricas
+    metricas["Intervalo de Confiança (95%)"] = pd.Series(ic)
+    
+    # Converte o dicionário para DataFrame
+    metricas_df = pd.DataFrame(metricas)
+    
+    print("\nMétricas Calculadas:")
+    print(metricas_df)
 
 def regressao_multipla(df):
-    X = df[['CPU', 'Processes']]
-    Y = df['PM']  # Memória Usada (MB)
-    
-    if X.empty or Y.empty:
-        print("Erro: Dados insuficientes para executar a regressão múltipla.")
-        return None, None, None
-    
+    X = df[['CPU', 'Threads']]
+    Y = np.log1p(df['PM'])  # Transformação logarítmica
     X_train, X_test, Y_train, Y_test = train_test_split(X, Y, test_size=0.2, random_state=42)
-    
     modelo = LinearRegression()
     modelo.fit(X_train, Y_train)
     Y_pred = modelo.predict(X_test)
-    
     r2 = r2_score(Y_test, Y_pred)
     mse = mean_squared_error(Y_test, Y_pred)
-    
-    coef_cpu, coef_processes = modelo.coef_
+    mae = mean_absolute_error(Y_test, Y_pred)
+    rmse = np.sqrt(mse)
+    coeficientes = modelo.coef_
     intercepto = modelo.intercept_
-    
+
+    # Exibir coeficientes e métricas
+    coeficientes_df = pd.DataFrame({'Variável': ['CPU', 'Threads'], 'Coeficiente': coeficientes})
     print("\nCoeficientes da Regressão Múltipla:")
-    print(f"CPU: {coef_cpu:.4f}")
-    print(f"Processes: {coef_processes:.4f}")
+    print(coeficientes_df)
     print(f"Intercepto: {intercepto:.4f}")
-    print(f"R²: {r2:.4f}")
-    print(f"MSE: {mse:.4f}")
-    print(df[['CPU', 'Processes']].corr())
-    
-    print("\nFórmula da Regressão:")
-    print(f"PM = {coef_cpu:.4f} * CPU + {coef_processes:.4f} * Processes + {intercepto:.4f}")
-    
-    plt.figure(figsize=(10, 6))
-    plt.scatter(X_test['CPU'], Y_test, color='blue', label='Dados Reais (CPU)')
-    plt.scatter(X_test['Processes'], Y_test, color='green', label='Dados Reais (Processes)')
-    plt.plot(X_test['CPU'], modelo.predict(X_test), color='red', linewidth=2, label='Predição')
-    plt.title("Regressão Múltipla: PM vs CPU e Processes")
-    plt.xlabel("CPU (%) e Quantidade de Processos")
-    plt.ylabel("Memória Usada (MB)")
-    plt.legend()
+    print(f"R²: {r2:.4f} | MSE: {mse:.4f} | MAE: {mae:.4f} | RMSE: {rmse:.4f}")
+
+    # Exibir a fórmula da regressão
+    formula = f"PM = {intercepto:.4f} + {coeficientes[0]:.4f} * CPU + {coeficientes[1]:.4f} * Threads"
+    print(f"\nFórmula da Regressão: {formula}")
+
+    return modelo, r2, mse, formula
+
+def calcular_percentis(df, colunas):
+    percentis = {}
+    for coluna in colunas:
+        percentis[coluna] = {
+            "5%": df[coluna].quantile(0.05),
+            "25%": df[coluna].quantile(0.25),
+            "50% (Mediana)": df[coluna].quantile(0.5),
+            "75%": df[coluna].quantile(0.75),
+            "95%": df[coluna].quantile(0.95)
+        }
+    percentis_df = pd.DataFrame(percentis)
+    print("\nPercentis Calculados:")
+    print(percentis_df)
+
+def calcular_frequencias(df, coluna):
+    frequencias = {
+        "Frequência Simples": df[coluna].value_counts(),
+        "Frequência Relativa": df[coluna].value_counts(normalize=True)
+    }
+    frequencias_df = pd.DataFrame(frequencias)
+    frequencias_df["Frequência Acumulada"] = frequencias_df["Frequência Simples"].cumsum()
+    print("\nFrequências Calculadas:")
+    print(frequencias_df)
+
+def exibir_boxplot(df):
+    plt.figure(figsize=(8, 6))
+    sns.boxplot(data=df, x='PM')
+    plt.title("Boxplot de PM (Memória)")
     plt.show()
-    
-    return modelo, r2, mse
+
 
 def grafico_residuos(df, modelo):
-    X = df[['CPU', 'Processes']]
-    Y = df['PM']
+    X = df[['CPU', 'Threads']]
+    Y = np.log1p(df['PM'])
     Y_pred = modelo.predict(X)
     residuos = Y - Y_pred
     sns.histplot(residuos, kde=True, color='red')
@@ -168,42 +135,45 @@ def grafico_residuos(df, modelo):
     plt.show()
 
 def menu():
-    csv_path = r"C:\\Users\\pmgtec\\Documents\\martins\\memoria_processos\\reg_memoria_processos\\dados_cap.csv"
+    csv_path = "dados_cap.csv"
     df = carregar_dados(csv_path)
-    
+    df_tratado = tratar_outliers(df, ['PM', 'CPU', 'Threads'])
+
     while True:
         print("\nMENU PRINCIPAL")
         print("1. Exibir Dados")
-        print("2. Calcular Métricas")
-        print("3. Mostrar Boxplot Relacional")
-        print("4. Tratar Outliers")
-        print("5. Calcular Frequências")
-        print("6. Regressão Múltipla")
-        print("7. Gráfico de Resíduos")
-        print("8. Calcular Percentis")
-        print("9. Sair")
-        
+        print("2. Regressão Múltipla")
+        print("3. Gráfico de Resíduos")
+        print("4. Calcular Métricas")
+        print("5. Calcular Percentis")
+        print("6. Calcular Frequências")
+        print("7. Exibir Boxplot")
+        print("8. Sair")
+
         opcao = input("Escolha uma opção: ")
+
         if opcao == "1":
-            print(df.head())
+            print("\nExibindo as primeiras 5 linhas do DataFrame:")
+            print(df_tratado.head())
         elif opcao == "2":
-            metricas = calcular_metricas(df['PM'])
-            print(metricas)
+            modelo, r2, mse, formula = regressao_multipla(df_tratado)  # Captura todos os valores retornados
         elif opcao == "3":
-            boxplot_relacional(df)
-        elif opcao == "4":
-            df = tratar_outliers(df)
-        elif opcao == "5":
-            calcular_frequencias(df)
-        elif opcao == "6":
-            modelo, r2, mse = regressao_multipla(df)
-        elif opcao == "7":
-            modelo, _, _ = regressao_multipla(df)
+            modelo, r2, mse, formula = regressao_multipla(df_tratado)  # Atualizado para capturar a fórmula
             if modelo is not None:
-                grafico_residuos(df, modelo)
+                grafico_residuos(df_tratado, modelo)
+        elif opcao == "4":
+            calcular_metricas(df_tratado)
+        elif opcao == "5":
+            calcular_percentis(df_tratado, ['PM', 'CPU', 'Threads'])
+        elif opcao == "6":
+            coluna = input("Digite o nome da coluna para calcular frequências: ")
+            if coluna in df_tratado.columns:
+                calcular_frequencias(df_tratado, coluna)
+            else:
+                print(f"Coluna '{coluna}' não encontrada no DataFrame.")
+        elif opcao == "7":
+            exibir_boxplot(df_tratado)
         elif opcao == "8":
-            calcular_percentis(df['PM'])
-        elif opcao == "9":
             print("Saindo...")
             break
         else:
